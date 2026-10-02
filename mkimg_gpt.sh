@@ -51,9 +51,10 @@ VERSION=${IMG_VERSION:-Radxa_ROCK5A_aosp}
 DATE=$(date +%Y%m%d)
 TARGET=$(echo "${TARGET_PRODUCT}" | sed 's/^aosp_//')
 IMGNAME=${VERSION}-${DATE}-${TARGET}_gpt.img
-# Must not exceed the target media (e.g. IMGSIZE=14GiB for a 16 GB eMMC);
-# userdata takes everything after the fixed partitions.
-IMGSIZE=${IMGSIZE:-19456MiB}
+# Small by default so the image writes quickly: the fixed partitions take
+# ~3.5 GiB and userdata gets the rest. After flashing, grow userdata to the
+# whole disk with grow_userdata.sh, or set IMGSIZE to build a bigger image.
+IMGSIZE=${IMGSIZE:-8GiB}
 IMAGE_PATH="${ANDROID_PRODUCT_OUT}/${IMGNAME}"
 
 if [ -f "${IMAGE_PATH}" ]; then
@@ -163,6 +164,7 @@ sudo chown "${USER}:${USER}" "${IMAGE_PATH}"
 
 echo "✅ Created ${IMAGE_PATH} with GPT partition names and filesystem labels."
 echo "You should now be able to write this image to your SD/NVMe and boot RK3588. "
+echo "After writing it, grow userdata to fill the disk: sudo device/opi/opi5_pro/grow_userdata.sh /dev/sdX"
 
 
 sudo sgdisk -p "${IMAGE_PATH}"
