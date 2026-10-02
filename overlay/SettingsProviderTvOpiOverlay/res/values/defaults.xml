@@ -20,7 +20,7 @@
 <resources>
 
     <!-- Default for Settings.Global.DEVICE_NAME $1=MODEL -->
-    <string name="def_device_name_simple">Orange Pi 5 Pro</string>
+    <string name="def_device_name_simple">Radxa ROCK 5A</string>
 
     <!-- Default screen brightness -->
     <integer name="def_screen_brightness">128</integer>

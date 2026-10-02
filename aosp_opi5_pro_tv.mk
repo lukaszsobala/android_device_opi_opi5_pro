@@ -40,6 +40,6 @@ PRODUCT_PACKAGES += \
 # Device identifier. This must come after all inclusions.
 PRODUCT_DEVICE := opi5_pro
 PRODUCT_NAME := aosp_opi
-PRODUCT_BRAND := Orangepi
-PRODUCT_MODEL := 5_pro
-PRODUCT_MANUFACTURER := Orangepi
+PRODUCT_BRAND := Radxa
+PRODUCT_MODEL := ROCK 5A
+PRODUCT_MANUFACTURER := Radxa

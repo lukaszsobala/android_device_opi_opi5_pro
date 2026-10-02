@@ -47,11 +47,13 @@ if [ ! -f "${UBOOT_BIN}" ]; then
   exit_with_error "Missing U-Boot: ${UBOOT_BIN}"
 fi
 
-VERSION=OrangePi_5Pro_aosp
+VERSION=${IMG_VERSION:-Radxa_ROCK5A_aosp}
 DATE=$(date +%Y%m%d)
 TARGET=$(echo "${TARGET_PRODUCT}" | sed 's/^aosp_//')
 IMGNAME=${VERSION}-${DATE}-${TARGET}_gpt.img
-IMGSIZE=19456MiB
+# Must not exceed the target media (e.g. IMGSIZE=14GiB for a 16 GB eMMC);
+# userdata takes everything after the fixed partitions.
+IMGSIZE=${IMGSIZE:-19456MiB}
 IMAGE_PATH="${ANDROID_PRODUCT_OUT}/${IMGNAME}"
 
 if [ -f "${IMAGE_PATH}" ]; then
