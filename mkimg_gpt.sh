@@ -8,7 +8,7 @@
 # - Creates GPT with named partitions so Android creates /dev/block/by-name/*
 # - Copies boot/system/vendor images (dd)
 # - Creates metadata/userdata ext4 and sets proper GPT & fs labels
-# - Uses kpartx to map partitions and cleans up reliably
+# - Uses kpartx (or losetup -P if kpartx is missing) to map partitions and cleans up reliably
 #
 set -euo pipefail
 IFS=$'\n\t'
@@ -21,12 +21,13 @@ exit_with_error() {
 }
 
 cleanup() {
-
-  if [ -n "${LOOPDEV:-}" ]; then
-    if sudo kpartx -l "${IMAGE_PATH}" >/dev/null 2>&1; then
-      sudo kpartx -d "${IMAGE_PATH}" || true
-    fi
+  if [ "${MAP_TOOL:-}" = kpartx ]; then
+    sudo kpartx -d "${IMAGE_PATH}" >/dev/null 2>&1 || true
+  elif [ "${MAP_TOOL:-}" = losetup ] && [ -n "${LOOPDEV:-}" ]; then
+    sudo partx -d "${LOOPDEV}" 2>/dev/null || true
+    sudo losetup -d "${LOOPDEV}" 2>/dev/null || true
   fi
+  MAP_TOOL=
 }
 
 trap cleanup EXIT
@@ -98,37 +99,50 @@ EOF
 echo "${PART_TABLE}" | sudo sfdisk "${IMAGE_PATH}"
 sync
 
-echo "Mapping partitions using kpartx..."
+if command -v kpartx >/dev/null 2>&1; then
+  echo "Mapping partitions using kpartx..."
+  MAP_TOOL=kpartx
+  KPARTX_OUT=$(sudo kpartx -av "${IMAGE_PATH}")
+  echo "${KPARTX_OUT}"
 
-KPARTX_OUT=$(sudo kpartx -av "${IMAGE_PATH}")
-echo "${KPARTX_OUT}"
-
-LOOPDEV=$(echo "${KPARTX_OUT}" | awk '/add map/ {dev=$3} END { sub(/p[0-9]+$/, "", dev); print dev }')
-if [ -z "${LOOPDEV}" ]; then
-  exit_with_error "kpartx failed to map partitions or to return a loop device name."
+  LOOPDEV=$(echo "${KPARTX_OUT}" | awk '/add map/ {dev=$3} END { sub(/p[0-9]+$/, "", dev); print dev }')
+  if [ -z "${LOOPDEV}" ]; then
+    exit_with_error "kpartx failed to map partitions or to return a loop device name."
+  fi
+  PART_PREFIX="/dev/mapper/${LOOPDEV}p"
+else
+  echo "kpartx not found, mapping partitions using losetup -P..."
+  MAP_TOOL=losetup
+  LOOPDEV=$(sudo losetup -f -P --show "${IMAGE_PATH}")
+  if [ -z "${LOOPDEV}" ]; then
+    exit_with_error "losetup failed to attach ${IMAGE_PATH}."
+  fi
+  PART_PREFIX="${LOOPDEV}p"
+  # Kernels without GPT support don't scan the table on attach; partx parses it itself.
+  [ -b "${PART_PREFIX}1" ] || sudo partx -a "${LOOPDEV}" 2>/dev/null || true
 fi
-echo "Mapped image as /dev/mapper/${LOOPDEV}p* (base loop: ${LOOPDEV})"
+echo "Mapped image partitions as ${PART_PREFIX}1..5"
 
 # Wait for device nodes to appear
 sleep 1
-if [ ! -b "/dev/mapper/${LOOPDEV}p1" ]; then
-  echo "Waiting a bit longer for /dev/mapper/${LOOPDEV}p1 to appear..."
+if [ ! -b "${PART_PREFIX}1" ]; then
+  echo "Waiting a bit longer for ${PART_PREFIX}1 to appear..."
   sleep 1
 fi
-if [ ! -b "/dev/mapper/${LOOPDEV}p1" ]; then
-  exit_with_error "Device mapper nodes not found (e.g. /dev/mapper/${LOOPDEV}p1). Check kpartx output."
+if [ ! -b "${PART_PREFIX}1" ]; then
+  exit_with_error "Partition device nodes not found (e.g. ${PART_PREFIX}1)."
 fi
 
 # --- Copy images into partitions ---
 echo "Writing boot image to p1 (FAT partition)..."
-sudo dd if="${ANDROID_PRODUCT_OUT}/boot.img" of="/dev/mapper/${LOOPDEV}p1" bs=1M conv=notrunc status=progress
+sudo dd if="${ANDROID_PRODUCT_OUT}/boot.img" of="${PART_PREFIX}1" bs=1M conv=notrunc status=progress
 
 echo "Writing system image to p2 (raw dd)."
 # Use conv=notrunc so we don't shrink partition image area; status=progress for visibility
-sudo dd if="${ANDROID_PRODUCT_OUT}/system.img" of="/dev/mapper/${LOOPDEV}p2" bs=1M conv=notrunc status=progress
+sudo dd if="${ANDROID_PRODUCT_OUT}/system.img" of="${PART_PREFIX}2" bs=1M conv=notrunc status=progress
 
 echo "Writing vendor image to p3 (raw dd)."
-sudo dd if="${ANDROID_PRODUCT_OUT}/vendor.img" of="/dev/mapper/${LOOPDEV}p3" bs=1M conv=notrunc status=progress
+sudo dd if="${ANDROID_PRODUCT_OUT}/vendor.img" of="${PART_PREFIX}3" bs=1M conv=notrunc status=progress
 
 sync
 
@@ -139,28 +153,28 @@ echo "Setting filesystem labels on p2 (system) and p3 (vendor) and creating meta
 
 # Try to set ext4 label on system; if it isn't an ext4, warn but continue.
 set +e
-sudo e2label "/dev/mapper/${LOOPDEV}p2" system 2>/dev/null
+sudo e2label "${PART_PREFIX}2" system 2>/dev/null
 E2_RC=$?
 if [ "${E2_RC}" -ne 0 ]; then
-  echo "Warning: /dev/mapper/${LOOPDEV}p2 does not appear to be ext4 or e2label failed. Continuing."
+  echo "Warning: ${PART_PREFIX}2 does not appear to be ext4 or e2label failed. Continuing."
 fi
-sudo e2label "/dev/mapper/${LOOPDEV}p3" vendor 2>/dev/null || echo "Warning: e2label on vendor failed (maybe not ext4)."
+sudo e2label "${PART_PREFIX}3" vendor 2>/dev/null || echo "Warning: e2label on vendor failed (maybe not ext4)."
 
 set -e
 
 # Create/format metadata and userdata partitions and set filesystem labels
-sudo mkfs.ext4 -F -L metadata "/dev/mapper/${LOOPDEV}p4"
-sudo mkfs.ext4 -F -L userdata "/dev/mapper/${LOOPDEV}p5"
+sudo mkfs.ext4 -F -L metadata "${PART_PREFIX}4"
+sudo mkfs.ext4 -F -L userdata "${PART_PREFIX}5"
 sync
 
 # Final sanity: list by-name symlinks
-echo "Partition mapping summary (kpartx):"
-sudo ls -l /dev/mapper/"${LOOPDEV}"* || true
+echo "Partition mapping summary (${MAP_TOOL}):"
+sudo ls -l "${PART_PREFIX}"* || true
 
 # Unmap now that we have set labels
-sudo kpartx -d "${IMAGE_PATH}" || true
+cleanup
 # fix ownership
-sudo chown "${USER}:${USER}" "${IMAGE_PATH}"
+sudo chown "${USER:-$(id -un)}:" "${IMAGE_PATH}"
 
 echo "✅ Created ${IMAGE_PATH} with GPT partition names and filesystem labels."
 echo "You should now be able to write this image to your SD/NVMe and boot RK3588. "
